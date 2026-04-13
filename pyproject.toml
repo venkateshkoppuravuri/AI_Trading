@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-trading"
+version = "0.1.0"
+description = "AI-powered Alpaca paper trading bot with trailing stop, copy trading, and wheel strategies"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.0",
+    "schedule>=1.2.0",
+    "rich>=13.0.0",
+    "pyyaml>=6.0.0",
+]
+
+[project.scripts]
+trading = "main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["trading*"]

@@ -1,0 +1,49 @@
+# ── Credentials — NEVER commit ───────────────────────────────────────────────
+.env
+
+# ── Runtime output (generated, not source) ───────────────────────────────────
+logs/
+state/
+
+# ── Debug / scratch files ─────────────────────────────────────────────────────
+*.txt
+!.env.example
+
+# ── Python bytecode ───────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ── Package build artifacts ───────────────────────────────────────────────────
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+.virtualenv/
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.sublime-*
+*.swp
+*.swo
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Claude Code internal ──────────────────────────────────────────────────────
+.claude/

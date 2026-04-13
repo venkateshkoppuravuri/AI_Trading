@@ -1,0 +1,45 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  AI Trading Bot — Strategy Parameters
+#  Edit this file to tune any strategy without touching Python source code.
+#  Changes take effect on the next restart of main.py.
+# ─────────────────────────────────────────────────────────────────────────────
+
+trailing_stop:
+  symbol: "TSLA"          # Stock ticker to trade
+  initial_shares: 10      # Shares purchased on first entry
+
+  # ── Stop-loss & trailing ──────────────────────────────────────────────────
+  stop_loss_pct: 10.0     # Hard floor: sell ALL if price drops this % below entry
+  trail_activate_pct: 5.0 # Start trailing only after price gains this % above entry
+  trail_distance_pct: 5.0 # Trail floor stays this % below the rolling high price
+
+  # ── Ladder buys on dips ───────────────────────────────────────────────────
+  # Format: [drop_pct, extra_shares]
+  # Example: buy 10 extra shares if price dips 20% below entry
+  ladder_levels:
+    - [20.0, 10]
+    - [30.0, 20]
+
+
+wheel:
+  symbol: "TSLA"          # Underlying stock for the options wheel
+  contracts: 1            # Option contracts per trade (1 contract = 100 shares)
+
+  # ── Strike selection ──────────────────────────────────────────────────────
+  strike_pct_below: 10.0  # Stage 1 (CSP): sell put this % below current price
+  strike_pct_above: 10.0  # Stage 2 (CC):  sell call this % above your cost basis
+
+  # ── Contract expiry window ────────────────────────────────────────────────
+  min_dte: 14             # Minimum days-to-expiry when selecting a contract
+  max_dte: 28             # Maximum days-to-expiry (2-4 week sweet spot)
+
+  # ── Early close rule ──────────────────────────────────────────────────────
+  early_close_pct: 50.0   # Buy-to-close when this % of the premium has been captured
+
+
+copy_trading:
+  trade_budget: 1000.0    # Total USD budget split evenly across top_n politicians
+  max_positions: 10       # Max simultaneous positions PER politician
+  top_n: 3                # How many top politicians to follow simultaneously
+                          # Budget per politician = trade_budget / top_n
+                          # e.g. $1,000 / 3 = ~$333 each
