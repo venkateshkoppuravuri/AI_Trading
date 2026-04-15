@@ -135,14 +135,19 @@ class AISignalStrategy(BaseStrategy):
         picks = self._get_model_picks()
         self._manage_exits(picks)
 
-        if picks and not halted:
-            self._enter_new_positions(picks, equity)
-        elif halted:
-            logger.warning(f"{self.name}: new entries blocked by risk manager")
-        else:
-            logger.info(f"{self.name}: no valid picks — regime gate or empty store")
+        try:
+            if picks and not halted:
+                self._enter_new_positions(picks, equity)
+            elif halted:
+                logger.warning(f"{self.name}: new entries blocked by risk manager")
+            else:
+                logger.info(f"{self.name}: no valid picks — regime gate or empty store")
+        except Exception as exc:
+            logger.error(f"{self.name}: entry phase failed — {exc}", exc_info=True)
+        finally:
+            # Always persist state — even if entries partially failed
+            self._save_state()
 
-        self._save_state()
         n_pos = len(self._state["positions"])
         logger.info(f"{self.name}: cycle complete — {n_pos} positions")
 
