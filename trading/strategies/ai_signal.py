@@ -97,6 +97,13 @@ class AISignalStrategy(BaseStrategy):
         )
         self._state      = self._load_state()
 
+        # Single Telegram instance — avoids re-initialising on every alert
+        try:
+            from trading.alerts.telegram import TelegramBot
+            self._telegram = TelegramBot()
+        except Exception:
+            self._telegram = None
+
     # ── BaseStrategy ──────────────────────────────────────────────────────────
 
     @property
@@ -408,9 +415,10 @@ class AISignalStrategy(BaseStrategy):
     # ── Telegram alerts ───────────────────────────────────────────────────────
 
     def _send_buy_alert(self, ticker, shares, price, pick, thesis) -> None:
+        if not self._telegram:
+            return
         try:
-            from trading.alerts.telegram import TelegramBot
-            TelegramBot().send_buy_alert(
+            self._telegram.send_buy_alert(
                 ticker     = ticker,
                 shares     = shares,
                 price      = price,
@@ -422,9 +430,10 @@ class AISignalStrategy(BaseStrategy):
             logger.warning(f"{self.name}: buy alert failed — {exc}")
 
     def _send_sell_alert(self, ticker, shares, price, pnl, reason) -> None:
+        if not self._telegram:
+            return
         try:
-            from trading.alerts.telegram import TelegramBot
-            TelegramBot().send_sell_alert(
+            self._telegram.send_sell_alert(
                 ticker    = ticker,
                 shares    = shares,
                 price     = price,
@@ -437,9 +446,10 @@ class AISignalStrategy(BaseStrategy):
 
     def _send_cycle_alert(self, body: str, emoji: str = "ℹ️") -> None:
         """Send a plain-text one-off alert (risk halt, macro gate, etc.)."""
+        if not self._telegram:
+            return
         try:
-            from trading.alerts.telegram import TelegramBot
-            TelegramBot()._send_message(
+            self._telegram._send_message(
                 f"{emoji} AISignal — {datetime.now().strftime('%d %b %H:%M IST')}\n\n"
                 f"{body}"
             )
@@ -448,9 +458,9 @@ class AISignalStrategy(BaseStrategy):
 
     def _send_cycle_summary(self, equity: float, picks: list, n_pos: int) -> None:
         """Send a brief daily cycle summary so you always hear from the bot."""
+        if not self._telegram:
+            return
         try:
-            from trading.alerts.telegram import TelegramBot
-
             macro_mult = self._get_macro_mult()
             regime_str = (
                 "RISK-OFF (macro gate active)" if macro_mult < 0.5
@@ -475,7 +485,7 @@ class AISignalStrategy(BaseStrategy):
             elif not picks:
                 msg += "\n  No trades entered — model found no high-confidence picks today."
 
-            TelegramBot()._send_message(msg)
+            self._telegram._send_message(msg)
         except Exception as exc:
             logger.warning(f"{self.name}: cycle summary alert failed — {exc}")
 
