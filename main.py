@@ -30,11 +30,31 @@ from trading.config import get_settings
 from trading.logger import get_logger
 from trading.market import is_market_hours
 from trading.strategies import (
+    AISignalStrategy,
     CopyTradingStrategy,
     TrailingStopStrategy,
     WheelStrategy,
 )
 from trading.strategies.base import BaseStrategy
+
+# ── Week 1: Alerts & Signals (lazy-imported so missing keys don't crash) ──────
+def _get_telegram():
+    """Return TelegramBot instance (or None if import fails)."""
+    try:
+        from trading.alerts.telegram import TelegramBot
+        return TelegramBot()
+    except Exception as exc:
+        logger.warning(f"Telegram unavailable: {exc}")
+        return None
+
+def _get_macro():
+    """Return MacroData instance (or None if import fails)."""
+    try:
+        from trading.signals.macro import MacroData
+        return MacroData()
+    except Exception as exc:
+        logger.warning(f"MacroData unavailable: {exc}")
+        return None
 
 logger = get_logger(__name__)
 
@@ -43,6 +63,11 @@ logger = get_logger(__name__)
 _TRAILING_DEFAULTS: dict = dict(symbol="TSLA", initial_shares=10)
 _COPY_DEFAULTS:     dict = dict(trade_budget=1_000.0, max_positions=10, top_n=3)
 _WHEEL_DEFAULTS:    dict = dict(symbol="TSLA", contracts=1)
+_AI_DEFAULTS:       dict = dict(budget=2_000.0, max_positions=5, profit_target=0.05,
+                                stop_loss=0.03, max_holding_days=10,
+                                pipeline_mode="top100", min_confidence="MED",
+                                daily_loss_limit=0.02, max_drawdown=0.10,
+                                max_position_pct=0.30, correlation_threshold=0.85)
 
 
 # ── params.yaml loader ────────────────────────────────────────────────────────
@@ -80,7 +105,7 @@ Examples:
     )
     p.add_argument(
         "--strategy",
-        choices=["all", "trailing", "copy", "wheel"],
+        choices=["all", "trailing", "copy", "wheel", "ai"],
         default="all",
         help="Which strategy to run (default: all)",
     )
@@ -126,12 +151,19 @@ def _build_strategies(args: argparse.Namespace) -> list[BaseStrategy]:
         if args.contracts: kwargs["contracts"] = args.contracts
         strats.append(WheelStrategy(**kwargs))
 
+    # ── AI Signal ─────────────────────────────────────────────────────────────
+    if which in ("all", "ai"):
+        kwargs = {**_AI_DEFAULTS, **params.get("ai_signal", {}), **params.get("risk", {})}
+        if args.budget:        kwargs["budget"]        = args.budget
+        if args.max_positions: kwargs["max_positions"] = args.max_positions
+        strats.append(AISignalStrategy(**kwargs))
+
     return strats
 
 
 # ── Job wrappers ──────────────────────────────────────────────────────────────
 
-def _make_job(strategy: BaseStrategy):
+def _make_job(strategy: BaseStrategy, telegram=None):
     """Return a scheduler-safe callable that runs one strategy cycle."""
     def job() -> None:
         try:
@@ -139,12 +171,17 @@ def _make_job(strategy: BaseStrategy):
             logger.info(f"{strategy.name}: {strategy.status()}")
         except Exception as exc:
             logger.error(f"{strategy.name}: Unhandled error — {exc}", exc_info=True)
+            if telegram:
+                try:
+                    telegram.send_error_alert(strategy.name, str(exc))
+                except Exception:
+                    pass
     return job
 
 
-def _make_market_job(strategy: BaseStrategy):
+def _make_market_job(strategy: BaseStrategy, telegram=None):
     """Wrap _make_job with a market-hours guard — skips when market is closed."""
-    inner = _make_job(strategy)
+    inner = _make_job(strategy, telegram)
     def guarded() -> None:
         if not is_market_hours():
             return
@@ -154,20 +191,25 @@ def _make_market_job(strategy: BaseStrategy):
 
 # ── Scheduler setup ───────────────────────────────────────────────────────────
 
-def _setup_schedule(strategies: list[BaseStrategy]) -> None:
+def _setup_schedule(strategies: list[BaseStrategy], telegram=None) -> None:
     for s in strategies:
         if isinstance(s, TrailingStopStrategy):
-            schedule.every(5).minutes.do(_make_market_job(s))
+            schedule.every(5).minutes.do(_make_market_job(s, telegram))
             logger.info(f"Scheduled {s.name} every 5 min (market hours)")
 
         elif isinstance(s, CopyTradingStrategy):
             for day in ("monday", "tuesday", "wednesday", "thursday", "friday"):
-                getattr(schedule.every(), day).at("09:35").do(_make_job(s))
+                getattr(schedule.every(), day).at("09:35").do(_make_job(s, telegram))
             logger.info(f"Scheduled {s.name} daily at 09:35 ET (Mon-Fri)")
 
         elif isinstance(s, WheelStrategy):
-            schedule.every(15).minutes.do(_make_market_job(s))
+            schedule.every(15).minutes.do(_make_market_job(s, telegram))
             logger.info(f"Scheduled {s.name} every 15 min (market hours)")
+
+        elif isinstance(s, AISignalStrategy):
+            for day in ("monday", "tuesday", "wednesday", "thursday", "friday"):
+                getattr(schedule.every(), day).at("09:30").do(_make_job(s, telegram))
+            logger.info(f"Scheduled {s.name} daily at 09:30 ET (Mon-Fri)")
 
 
 # ── Graceful shutdown ─────────────────────────────────────────────────────────
@@ -182,6 +224,47 @@ def _shutdown(signum, frame) -> None:  # noqa: ARG001
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def _send_daily_summary(telegram, client) -> None:
+    """Fetch portfolio data from Alpaca and send daily P&L summary to Telegram."""
+    try:
+        account   = client.get_account()
+        positions = client.get_positions()
+        equity    = float(account.get("equity", 0))
+        prev_eq   = float(account.get("last_equity", equity))
+        day_pnl   = equity - prev_eq
+        day_pct   = (day_pnl / prev_eq * 100) if prev_eq else 0.0
+
+        # Find top mover by unrealized P&L
+        top_mover = None
+        if positions:
+            best = max(positions, key=lambda p: float(p.get("unrealized_pl", 0)))
+            if float(best.get("unrealized_pl", 0)) > 0:
+                top_mover = best.get("symbol")
+
+        telegram.send_daily_summary(
+            portfolio_value=equity,
+            day_pnl=day_pnl,
+            day_pnl_pct=day_pct,
+            positions=positions,
+            top_mover=top_mover,
+        )
+        logger.info("Daily summary sent to Telegram.")
+    except Exception as exc:
+        logger.warning(f"Daily summary failed: {exc}")
+
+
+def _send_weekly_report(telegram) -> None:
+    """Send weekly trade journal report to Telegram."""
+    try:
+        from trading.journal import TradeJournal
+        report = TradeJournal().format_weekly_report()
+        if telegram:
+            telegram._send_message(report)
+        logger.info("Weekly journal report sent.")
+    except Exception as exc:
+        logger.warning(f"Weekly report failed: {exc}")
+
+
 def main() -> None:
     args     = _parse_args()
     settings = get_settings()   # fail fast if .env is missing
@@ -191,12 +274,30 @@ def main() -> None:
         logger.error("No strategies selected — exiting.")
         return
 
+    # ── Week 1: initialise Telegram & Macro (non-blocking — failures are warnings)
+    telegram = _get_telegram()
+    macro    = _get_macro()
+
+    if macro:
+        try:
+            regime = macro.get_market_regime()
+            multiplier = macro.get_position_size_multiplier()
+            logger.info(f"Macro regime: {regime}  |  Size multiplier: {multiplier}x")
+        except Exception as exc:
+            logger.warning(f"Macro check failed: {exc}")
+
     logger.info("=" * 56)
     logger.info("  AI Trading Bot starting")
     logger.info(f"  Account : {settings.base_url}")
     for s in strats:
         logger.info(f"  Strategy: {s.name}")
     logger.info("=" * 56)
+
+    if telegram:
+        try:
+            telegram.send_bot_started()
+        except Exception:
+            pass
 
     # ── One-shot mode (--once) ────────────────────────────────────────────────
     if args.once:
@@ -213,11 +314,27 @@ def main() -> None:
     signal.signal(signal.SIGINT,  _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    _setup_schedule(strats)
+    _setup_schedule(strats, telegram)
+
+    # Daily P&L summary at 13:30 UTC (= 1:30 AM IST = ~30 min after US market close)
+    try:
+        from trading.client import AlpacaClient
+        _client = AlpacaClient()
+        schedule.every().day.at("13:30").do(_send_daily_summary, telegram, _client)
+        logger.info("Daily P&L summary scheduled at 13:30 UTC (1:30 AM IST)")
+    except Exception as exc:
+        logger.warning(f"Could not schedule daily summary: {exc}")
+
+    # Weekly journal report every Friday at 13:45 UTC (after market close)
+    try:
+        schedule.every().friday.at("13:45").do(_send_weekly_report, telegram)
+        logger.info("Weekly journal report scheduled every Friday at 13:45 UTC")
+    except Exception as exc:
+        logger.warning(f"Could not schedule weekly report: {exc}")
 
     logger.info("Running initial cycle for all strategies...")
     for s in strats:
-        _make_job(s)()
+        _make_job(s, telegram)()
 
     def _scheduler_loop() -> None:
         while not _stop_event.is_set():
@@ -229,6 +346,13 @@ def main() -> None:
 
     logger.info("All strategies running. Press Ctrl+C or send SIGTERM to stop.\n")
     _stop_event.wait()
+
+    # ── Shutdown ──────────────────────────────────────────────────────────────
+    if telegram:
+        try:
+            telegram.send_bot_stopped()
+        except Exception:
+            pass
     logger.info("Shutdown complete.")
 
 

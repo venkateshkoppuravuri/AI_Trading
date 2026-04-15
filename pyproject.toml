@@ -13,6 +13,23 @@ dependencies = [
     "schedule>=1.2.0",
     "rich>=13.0.0",
     "pyyaml>=6.0.0",
+    # ── Week 1: signals & alerts ──────────────────────────
+    "finnhub-python>=2.4.0",   # Finnhub news sentiment + analyst ratings
+    "fredapi>=0.5.0",           # FRED macro data (VIX, yield curve, etc.)
+    # ── Week 2: data & feature pipeline ───────────────────
+    "pandas>=2.0.0",            # DataFrames for OHLCV and features
+    "numpy>=1.24.0",            # numerical computations
+    "pyarrow>=12.0.0",          # Parquet read/write for feature store
+    # ── Week 3: ML model ──────────────────────────────────
+    "lightgbm>=4.0.0",          # gradient boosting for return prediction
+    "shap>=0.43.0",             # SHAP feature importance explanations
+    # ── Week 6: LLM reasoning ─────────────────────────────
+    "anthropic>=0.25.0",        # Claude API — signal synthesis + trade approval
+    # ── Week 7: portfolio optimization ────────────────────
+    "scipy>=1.11.0",             # HRP clustering (Ward linkage + leaves_list)
+    # ── Week 8: dashboard ─────────────────────────────────
+    "streamlit>=1.32.0",         # live trading dashboard
+    "plotly>=5.17.0",            # interactive charts (P&L, VIX gauge)
 ]
 
 [project.scripts]

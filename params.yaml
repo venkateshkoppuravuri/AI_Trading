@@ -43,3 +43,20 @@ copy_trading:
   top_n: 3                # How many top politicians to follow simultaneously
                           # Budget per politician = trade_budget / top_n
                           # e.g. $1,000 / 3 = ~$333 each
+
+
+ai_signal:
+  budget: 2000.0          # Total USD for all AI-signal positions
+  max_positions: 5        # Max simultaneous AI-driven holdings
+  profit_target: 0.05     # Sell when gain >= 5%
+  stop_loss: 0.03         # Sell when loss >= 3%
+  max_holding_days: 10    # Force-exit after 10 days regardless of P&L
+  pipeline_mode: "top100" # Feature refresh scope: quick | top100 | full
+  min_confidence: "MED"   # Minimum model confidence: HIGH | MED | LOW
+
+
+risk:
+  daily_loss_limit: 0.02   # Block new entries if portfolio is down >2% today
+  max_drawdown: 0.10       # Halt + Telegram alert if down >10% from peak
+  max_position_pct: 0.30   # Cap any single position at 30% of total equity
+  correlation_threshold: 0.85  # Block entry if >85% correlated with existing positions

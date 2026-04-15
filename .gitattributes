@@ -1,0 +1,17 @@
+# ── Line-ending rules ─────────────────────────────────────────────────────────
+# Shell scripts MUST use LF in the Linux container — never CRLF.
+*.sh    text eol=lf
+
+# Python files — LF everywhere
+*.py    text eol=lf
+
+# TOML / YAML config
+*.toml  text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+
+# Dockerfile
+Dockerfile  text eol=lf
+
+# Everything else — auto-detect
+*       text=auto

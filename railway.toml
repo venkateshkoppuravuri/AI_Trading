@@ -1,0 +1,28 @@
+# ── Railway deployment config ─────────────────────────────────────────────────
+# Docs: https://docs.railway.app/reference/config-as-code
+#
+# This file configures the PRIMARY service (trading bot).
+# To add the Streamlit dashboard as a second service:
+#   1. In Railway dashboard → New Service → GitHub Repo (same repo)
+#   2. Override Start Command: bash scripts/entrypoint_dashboard.sh
+#   3. Set PORT env var to 8501 (Railway auto-assigns public URL)
+#   4. Share the same Volume mounted at /app/state on both services
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "bash scripts/entrypoint.sh"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+
+# Environment variables to set in Railway dashboard (Settings → Variables):
+#   ALPACA_API_KEY
+#   ALPACA_API_SECRET
+#   ALPACA_BASE_URL     = https://paper-api.alpaca.markets/v2
+#   TELEGRAM_BOT_TOKEN
+#   TELEGRAM_CHAT_ID
+#   FINNHUB_API_KEY
+#   FRED_API_KEY
+#   ANTHROPIC_API_KEY

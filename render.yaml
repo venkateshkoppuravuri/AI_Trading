@@ -1,0 +1,65 @@
+# ── Render deployment blueprint ───────────────────────────────────────────────
+# Docs: https://render.com/docs/blueprint-spec
+#
+# Deploy both services from one repo with:
+#   render.com → New → Blueprint → connect this repo
+
+services:
+
+  # ── Trading bot (background worker) ──────────────────────────────────────
+  - type: worker
+    name: ai-trading-bot
+    env: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: bash scripts/entrypoint.sh
+    plan: starter          # $7/month — always-on worker
+    disk:
+      name: trading-state
+      mountPath: /app/state
+      sizeGB: 1
+    envVars:
+      - key: ALPACA_API_KEY
+        sync: false
+      - key: ALPACA_API_SECRET
+        sync: false
+      - key: ALPACA_BASE_URL
+        value: https://paper-api.alpaca.markets/v2
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: FINNHUB_API_KEY
+        sync: false
+      - key: FRED_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+
+  # ── Streamlit dashboard (web service) ────────────────────────────────────
+  - type: web
+    name: ai-trading-dashboard
+    env: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: bash scripts/entrypoint_dashboard.sh
+    plan: starter          # $7/month
+    disk:
+      name: trading-state  # same disk name = Render mounts shared persistent disk
+      mountPath: /app/state
+      sizeGB: 1
+    envVars:
+      - key: ALPACA_API_KEY
+        sync: false
+      - key: ALPACA_API_SECRET
+        sync: false
+      - key: ALPACA_BASE_URL
+        value: https://paper-api.alpaca.markets/v2
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: FINNHUB_API_KEY
+        sync: false
+      - key: FRED_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false

@@ -1,0 +1,52 @@
+# ── AI Trading Bot — docker-compose ──────────────────────────────────────────
+#
+# Local usage:
+#   docker compose up --build            # start both services
+#   docker compose up bot                # bot only
+#   docker compose up dashboard          # dashboard only
+#   docker compose logs -f bot           # follow bot logs
+#
+# First-run seeding (run once before starting the bot):
+#   docker compose run --rm bot bash scripts/seed_pipeline.sh
+#
+# The `trading_state` volume persists bars, features, model, journal, and risk
+# state across restarts and redeployments.
+
+version: "3.9"
+
+volumes:
+  trading_state:        # shared persistent state for both services
+
+services:
+
+  # ── Trading bot (AI Signal strategy, scheduled daily) ─────────────────────
+  bot:
+    build: .
+    command: bash scripts/entrypoint.sh
+    env_file: .env
+    volumes:
+      - trading_state:/app/state
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ── Streamlit dashboard (web UI, port 8501) ───────────────────────────────
+  dashboard:
+    build: .
+    command: bash scripts/entrypoint_dashboard.sh
+    env_file: .env
+    volumes:
+      - trading_state:/app/state
+    ports:
+      - "8501:8501"
+    restart: unless-stopped
+    depends_on:
+      - bot
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
