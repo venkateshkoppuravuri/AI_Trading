@@ -62,21 +62,36 @@ class AISignalStrategy(BaseStrategy):
 
     def __init__(
         self,
-        budget:                float = 2_000.0,
-        max_positions:         int   = 5,
+        # ── Dynamic sizing (live equity) ─────────────────────────────────────
+        budget_pct:            float = 0.90,    # fraction of live equity to deploy
+        min_position_dollars:  float = 2_000.0, # min $ per slot → sets max_positions
+        max_positions_cap:     int   = 20,       # hard ceiling on simultaneous positions
+        # ── Legacy overrides (set > 0 to pin a fixed value) ──────────────────
+        budget:                float = 0.0,      # 0 = use budget_pct
+        max_positions:         int   = 0,        # 0 = compute from min_position_dollars
+        # ── Exit / entry rules ────────────────────────────────────────────────
         profit_target:         float = 0.05,
         stop_loss:             float = 0.03,
         max_holding_days:      int   = 10,
         pipeline_mode:         str   = "top100",
         min_confidence:        str   = "MED",
-        # Risk parameters
+        # ── Risk parameters ───────────────────────────────────────────────────
         daily_loss_limit:      float = 0.02,
         max_drawdown:          float = 0.10,
         max_position_pct:      float = 0.30,
         correlation_threshold: float = 0.85,
     ) -> None:
-        self.budget           = budget
-        self.max_positions    = max_positions
+        # Dynamic sizing config
+        self.budget_pct           = budget_pct
+        self.min_position_dollars = min_position_dollars
+        self.max_positions_cap    = max_positions_cap
+        self._fixed_budget        = budget        # 0 = dynamic
+        self._fixed_max_positions = max_positions  # 0 = dynamic
+
+        # Working values — updated each cycle by _update_dynamic_sizing()
+        self.budget        = budget if budget > 0 else 2_000.0
+        self.max_positions = max_positions if max_positions > 0 else 5
+
         self.profit_target    = profit_target
         self.stop_loss        = stop_loss
         self.max_holding_days = max_holding_days
@@ -110,12 +125,51 @@ class AISignalStrategy(BaseStrategy):
     def name(self) -> str:
         return "AISignal"
 
+    # ── Dynamic sizing ────────────────────────────────────────────────────────
+
+    def _update_dynamic_sizing(self, equity: float) -> None:
+        """
+        Recompute self.budget and self.max_positions from live equity.
+        Called once per cycle, immediately after the equity fetch.
+
+        Logic:
+          budget        = equity × budget_pct   (unless _fixed_budget > 0)
+          max_positions = floor(budget / min_position_dollars),
+                          clamped to [1, max_positions_cap]
+                          (unless _fixed_max_positions > 0)
+        """
+        if equity <= 0:
+            return
+
+        # Budget
+        if self._fixed_budget > 0:
+            self.budget = self._fixed_budget
+        else:
+            self.budget = round(equity * self.budget_pct, 2)
+
+        # Max positions
+        if self._fixed_max_positions > 0:
+            self.max_positions = self._fixed_max_positions
+        else:
+            dynamic = max(1, int(self.budget / self.min_position_dollars))
+            self.max_positions = min(dynamic, self.max_positions_cap)
+
+        per_slot = self.budget / self.max_positions if self.max_positions else self.budget
+        logger.info(
+            f"{self.name}: sizing — equity=${equity:,.0f} "
+            f"→ budget=${self.budget:,.0f} | {self.max_positions} positions "
+            f"| ~${per_slot:,.0f}/slot"
+        )
+
+    # ── Cycle ─────────────────────────────────────────────────────────────────
+
     def run(self) -> None:
         logger.info(f"{self.name}: starting cycle")
 
-        # ── Risk gate: update daily snapshot, check max-drawdown halt ─────────
+        # ── Risk gate + dynamic sizing ────────────────────────────────────────
         try:
             equity = float(self._client.get_account().get("equity", 0))
+            self._update_dynamic_sizing(equity)
             self._risk.update_daily_reference(equity)
             halted, halt_reason = self._risk.check_halt(equity)
             if halted:

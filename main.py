@@ -63,11 +63,17 @@ logger = get_logger(__name__)
 _TRAILING_DEFAULTS: dict = dict(symbol="TSLA", initial_shares=10)
 _COPY_DEFAULTS:     dict = dict(trade_budget=1_000.0, max_positions=10, top_n=3)
 _WHEEL_DEFAULTS:    dict = dict(symbol="TSLA", contracts=1)
-_AI_DEFAULTS:       dict = dict(budget=5_000.0, max_positions=8, profit_target=0.05,
-                                stop_loss=0.03, max_holding_days=10,
-                                pipeline_mode="top100", min_confidence="MED",
-                                daily_loss_limit=0.02, max_drawdown=0.10,
-                                max_position_pct=0.30, correlation_threshold=0.85)
+_AI_DEFAULTS:       dict = dict(
+    # dynamic sizing — overridden each cycle from live equity
+    budget_pct=0.90, min_position_dollars=2_000.0, max_positions_cap=20,
+    budget=0.0, max_positions=0,          # 0 = use dynamic values above
+    # exit rules
+    profit_target=0.05, stop_loss=0.03, max_holding_days=10,
+    pipeline_mode="top100", min_confidence="MED",
+    # risk
+    daily_loss_limit=0.02, max_drawdown=0.10,
+    max_position_pct=0.30, correlation_threshold=0.85,
+)
 
 
 # ── params.yaml loader ────────────────────────────────────────────────────────
