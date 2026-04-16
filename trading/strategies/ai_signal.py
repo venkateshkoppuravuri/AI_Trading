@@ -33,6 +33,7 @@ Journal: state/trade_journal.db     (full trade history, grades)
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -280,11 +281,21 @@ class AISignalStrategy(BaseStrategy):
         pick_tickers = {p["ticker"] for p in current_picks}
         to_exit: list[tuple[str, int, str]] = []
 
+        # Fetch all exit prices in parallel — same thread-pool pattern as entries
+        held_tickers = list(positions.keys())
+        exit_prices: dict[str, float] = {}
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            fut_map = {pool.submit(self._get_price, t): t for t in held_tickers}
+            for fut in as_completed(fut_map, timeout=30):
+                t = fut_map[fut]
+                try:
+                    exit_prices[t] = fut.result()
+                except Exception as exc:
+                    logger.warning(f"{self.name}: price unavailable for {t} — {exc}")
+
         for ticker, pos in list(positions.items()):
-            try:
-                price = self._get_price(ticker)
-            except Exception as exc:
-                logger.warning(f"{self.name}: price unavailable for {ticker} — {exc}")
+            price = exit_prices.get(ticker)
+            if price is None:
                 continue
 
             entry        = pos["entry_price"]
@@ -372,15 +383,19 @@ class AISignalStrategy(BaseStrategy):
 
         new_tickers = [p["ticker"] for p in new_picks]
 
-        # ── Step 4a: Fetch live prices for all new tickers ────────────────────
+        # ── Step 4a: Fetch live prices for all new tickers (parallel) ───────
         # Live prices are used for share calculation — avoids stale-bar-price
         # issue where uncached tickers had price=0 and shares=0.
+        # Uses a thread pool so 20 tickers fetch in ~5s instead of ~100s.
         live_prices: dict[str, float] = {}
-        for t in new_tickers:
-            try:
-                live_prices[t] = self._get_price(t)
-            except Exception as exc:
-                logger.warning(f"{self.name}: could not fetch price for {t} — {exc}")
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            fut_map = {pool.submit(self._get_price, t): t for t in new_tickers}
+            for fut in as_completed(fut_map, timeout=30):
+                t = fut_map[fut]
+                try:
+                    live_prices[t] = fut.result()
+                except Exception as exc:
+                    logger.warning(f"{self.name}: could not fetch price for {t} — {exc}")
 
         # ── Step 4b: HRP weights ──────────────────────────────────────────────
         # HRP uses historical return correlations to size positions by equal risk.

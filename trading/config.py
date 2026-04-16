@@ -43,8 +43,8 @@ class Settings:
     log_backup_count: int = 5
 
     # ── API client ────────────────────────────────────────────────────────────
-    request_timeout: int = 15               # seconds per HTTP call
-    retry_max_attempts: int = 3
+    request_timeout: int = 5                # seconds per HTTP call (5s keeps hangs short)
+    retry_max_attempts: int = 2             # 2 attempts: faster fail for stale prices
     retry_backoff_base: float = 2.0         # wait = backoff_base ** attempt
 
     def __post_init__(self) -> None:
