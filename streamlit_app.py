@@ -35,7 +35,16 @@ st.set_page_config(
 )
 
 _STATE_FILE = Path("state/ai_signal_state.json")
-_AI_BUDGET  = 2_000.0   # keep in sync with params.yaml
+
+
+def _load_ai_params() -> dict:
+    """Load ai_signal section from params.yaml (never cached — always current)."""
+    try:
+        import yaml
+        data = yaml.safe_load(Path("params.yaml").read_text())
+        return data.get("ai_signal", {})
+    except Exception:
+        return {}
 
 
 # ── Cached data loaders ───────────────────────────────────────────────────────
@@ -105,7 +114,8 @@ def _grade_badge(grade: str) -> str:
 # ── App entry point ───────────────────────────────────────────────────────────
 
 def main() -> None:
-    state = _load_state()
+    state     = _load_state()
+    ai_params = _load_ai_params()
 
     # ── Header row ────────────────────────────────────────────────────────────
     col_title, col_btn = st.columns([9, 1])
@@ -126,6 +136,19 @@ def main() -> None:
         day_pnl_pct = (day_pnl / last_equity * 100) if last_equity else 0.0
     except Exception:
         equity = last_equity = cash = day_pnl = day_pnl_pct = 0.0
+
+    # ── Dynamic budget + max_positions (mirrors ai_signal.py logic) ──────────
+    fixed_budget = float(ai_params.get("budget", 0))
+    budget_pct   = float(ai_params.get("budget_pct", 0.90))
+    min_slot     = float(ai_params.get("min_position_dollars", 2_000))
+    pos_cap      = int(ai_params.get("max_positions_cap", 20))
+    fixed_pos    = int(ai_params.get("max_positions", 0))
+
+    ai_budget = fixed_budget if fixed_budget > 0 else round(equity * budget_pct, 2)
+    if fixed_pos > 0:
+        max_pos = fixed_pos
+    else:
+        max_pos = min(max(1, int(ai_budget / min_slot)), pos_cap)
 
     # ── Macro headline ────────────────────────────────────────────────────────
     try:
@@ -148,7 +171,7 @@ def main() -> None:
     k3.metric("Cash",            f"${cash:,.2f}")
     k4.metric("Macro Regime",    f"{regime_emoji} {regime}",
               f"VIX {vix_val:.1f}" if vix_val else None)
-    k5.metric("AI Positions",    f"{len(positions)} / 5")
+    k5.metric("AI Positions",    f"{len(positions)} / {max_pos}")
 
     st.divider()
 
@@ -158,7 +181,7 @@ def main() -> None:
     ])
 
     with tab_pos:
-        _tab_positions(positions)
+        _tab_positions(positions, ai_budget, max_pos)
 
     with tab_journal:
         _tab_journal()
@@ -170,7 +193,7 @@ def main() -> None:
         _tab_macro(macro_data)
 
     with tab_risk:
-        _tab_risk(equity, positions)
+        _tab_risk(equity, positions, ai_budget, max_pos)
 
     # ── Footer ────────────────────────────────────────────────────────────────
     last_scored = state.get("last_scored") or "Never"
@@ -184,8 +207,8 @@ def main() -> None:
 
 # ── Tab: Positions ────────────────────────────────────────────────────────────
 
-def _tab_positions(positions: dict) -> None:
-    st.subheader("Open Positions")
+def _tab_positions(positions: dict, ai_budget: float, max_pos: int) -> None:
+    st.subheader(f"Open Positions  ({len(positions)} / {max_pos} slots used)")
 
     if not positions:
         st.info("No open positions. Next cycle runs at 09:30 ET on the next trading day.")
@@ -230,9 +253,9 @@ def _tab_positions(positions: dict) -> None:
 
     # Budget bar
     budget_used = sum(p.get("budget_used", 0) for p in positions.values())
-    pct = min(budget_used / _AI_BUDGET, 1.0)
-    st.progress(pct, text=(f"AI Signal budget: ${budget_used:.0f} / "
-                            f"${_AI_BUDGET:.0f}  ({pct*100:.0f}% deployed)"))
+    pct = min(budget_used / ai_budget, 1.0) if ai_budget > 0 else 0.0
+    st.progress(pct, text=(f"AI Signal budget: ${budget_used:,.0f} / "
+                            f"${ai_budget:,.0f}  ({pct*100:.0f}% deployed)"))
 
 
 # ── Tab: Journal ─────────────────────────────────────────────────────────────
@@ -470,7 +493,7 @@ def _risk_status(equity: float) -> dict:
     return rm.get_status(equity)
 
 
-def _tab_risk(equity: float, positions: dict) -> None:
+def _tab_risk(equity: float, positions: dict, ai_budget: float = 0, max_pos: int = 0) -> None:
     st.subheader("Portfolio Risk Monitor")
 
     if equity <= 0:
