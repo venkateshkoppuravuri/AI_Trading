@@ -394,10 +394,14 @@ class AISignalStrategy(BaseStrategy):
         # ── Step 4b: HRP weights ──────────────────────────────────────────────
         # HRP uses historical return correlations to size positions by equal risk.
         # Falls back to equal-weight when bars cache is missing.
+        logger.info(f"{self.name}: step 4b — running HRP allocation for {len(new_tickers)} tickers...")
         hrp_alloc = self._hrp.allocate_dollars(new_tickers, budget_left)
+        logger.info(f"{self.name}: step 4b done — HRP complete")
 
         # ── Step 4c: Kelly fractions ──────────────────────────────────────────
+        logger.info(f"{self.name}: step 4c — fetching macro multiplier...")
         macro_mult = self._get_macro_mult()
+        logger.info(f"{self.name}: step 4c — macro_mult={macro_mult:.2f}, running Kelly sizing...")
         kelly_sizes = self._kelly.size_all(
             picks         = new_picks,
             total_budget  = budget_left,
@@ -406,6 +410,7 @@ class AISignalStrategy(BaseStrategy):
             profit_target = self.profit_target,
             macro_mult    = macro_mult,
         )
+        logger.info(f"{self.name}: step 4c done — Kelly complete")
 
         # ── Blend: average HRP and Kelly dollar allocations ───────────────────
         per_slot   = budget_left / len(new_tickers)   # equal-weight fallback
