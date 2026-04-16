@@ -392,16 +392,32 @@ class AISignalStrategy(BaseStrategy):
         live_prices: dict[str, float] = self._fetch_prices_parallel(new_tickers)
 
         # ── Step 4b: HRP weights ──────────────────────────────────────────────
-        # HRP uses historical return correlations to size positions by equal risk.
-        # Falls back to equal-weight when bars cache is missing.
+        # ── Step 4b: HRP weights (with timeout guard) ────────────────────────
+        # HRP reads 20 parquet files from state/bars/. On OneDrive or slow
+        # drives this can hang indefinitely.  We run it on a daemon thread
+        # with an 8-second timeout; if it doesn't finish we fall back to
+        # equal-weight allocation so the rest of the cycle is never blocked.
         logger.info(f"{self.name}: step 4b — running HRP allocation for {len(new_tickers)} tickers...")
-        hrp_alloc = self._hrp.allocate_dollars(new_tickers, budget_left)
-        logger.info(f"{self.name}: step 4b done — HRP complete")
+        _hrp_result: list = [None]
+        def _run_hrp() -> None:
+            try:
+                _hrp_result[0] = self._hrp.allocate_dollars(new_tickers, budget_left)
+            except Exception as exc:
+                logger.warning(f"{self.name}: HRP error — {exc}")
+        _hrp_thread = threading.Thread(target=_run_hrp, daemon=True)
+        _hrp_thread.start()
+        _hrp_thread.join(timeout=8)
+        if _hrp_result[0] is not None:
+            hrp_alloc = _hrp_result[0]
+            logger.info(f"{self.name}: step 4b done — HRP complete")
+        else:
+            logger.warning(f"{self.name}: step 4b — HRP timed out, using equal-weight fallback")
+            per = budget_left / len(new_tickers)
+            hrp_alloc = {t: {"dollars": per, "shares": 0, "weight": round(1/len(new_tickers), 4), "price": 0}
+                         for t in new_tickers}
 
         # ── Step 4c: Kelly fractions ──────────────────────────────────────────
-        logger.info(f"{self.name}: step 4c — fetching macro multiplier...")
         macro_mult = self._get_macro_mult()
-        logger.info(f"{self.name}: step 4c — macro_mult={macro_mult:.2f}, running Kelly sizing...")
         kelly_sizes = self._kelly.size_all(
             picks         = new_picks,
             total_budget  = budget_left,
@@ -410,7 +426,6 @@ class AISignalStrategy(BaseStrategy):
             profit_target = self.profit_target,
             macro_mult    = macro_mult,
         )
-        logger.info(f"{self.name}: step 4c done — Kelly complete")
 
         # ── Blend: average HRP and Kelly dollar allocations ───────────────────
         per_slot   = budget_left / len(new_tickers)   # equal-weight fallback
