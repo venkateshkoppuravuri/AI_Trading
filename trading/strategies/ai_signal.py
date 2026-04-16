@@ -33,11 +33,24 @@ Journal: state/trade_journal.db     (full trade history, grades)
 from __future__ import annotations
 
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
 from trading.client import AlpacaClient
+
+# Each worker thread gets its own AlpacaClient (and therefore its own
+# requests.Session).  A single shared session is NOT thread-safe — urllib3's
+# connection pool can deadlock when hit by 10 threads simultaneously.
+_thread_local = threading.local()
+
+
+def _thread_get_price(ticker: str) -> float:
+    """Fetch the latest price using a per-thread AlpacaClient."""
+    if not hasattr(_thread_local, "client"):
+        _thread_local.client = AlpacaClient()
+    return _thread_local.client.get_latest_price(ticker)
 from trading.journal import TradeJournal
 from trading.logger import get_logger
 from trading.portfolio.kelly import KellySizer
@@ -281,11 +294,11 @@ class AISignalStrategy(BaseStrategy):
         pick_tickers = {p["ticker"] for p in current_picks}
         to_exit: list[tuple[str, int, str]] = []
 
-        # Fetch all exit prices in parallel — same thread-pool pattern as entries
+        # Fetch all exit prices in parallel — per-thread clients avoid Session deadlock
         held_tickers = list(positions.keys())
         exit_prices: dict[str, float] = {}
         with ThreadPoolExecutor(max_workers=10) as pool:
-            fut_map = {pool.submit(self._get_price, t): t for t in held_tickers}
+            fut_map = {pool.submit(_thread_get_price, t): t for t in held_tickers}
             for fut in as_completed(fut_map, timeout=30):
                 t = fut_map[fut]
                 try:
@@ -386,10 +399,10 @@ class AISignalStrategy(BaseStrategy):
         # ── Step 4a: Fetch live prices for all new tickers (parallel) ───────
         # Live prices are used for share calculation — avoids stale-bar-price
         # issue where uncached tickers had price=0 and shares=0.
-        # Uses a thread pool so 20 tickers fetch in ~5s instead of ~100s.
+        # Uses per-thread AlpacaClient to avoid requests.Session deadlock.
         live_prices: dict[str, float] = {}
         with ThreadPoolExecutor(max_workers=10) as pool:
-            fut_map = {pool.submit(self._get_price, t): t for t in new_tickers}
+            fut_map = {pool.submit(_thread_get_price, t): t for t in new_tickers}
             for fut in as_completed(fut_map, timeout=30):
                 t = fut_map[fut]
                 try:
