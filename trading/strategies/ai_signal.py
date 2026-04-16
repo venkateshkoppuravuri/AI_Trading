@@ -372,40 +372,49 @@ class AISignalStrategy(BaseStrategy):
 
         new_tickers = [p["ticker"] for p in new_picks]
 
-        # ── Step 4a: HRP weights ──────────────────────────────────────────────
-        # HRP uses historical return correlations to size positions by equal risk
-        # Falls back to equal-weight if bars cache is missing
+        # ── Step 4a: Fetch live prices for all new tickers ────────────────────
+        # Live prices are used for share calculation — avoids stale-bar-price
+        # issue where uncached tickers had price=0 and shares=0.
+        live_prices: dict[str, float] = {}
+        for t in new_tickers:
+            try:
+                live_prices[t] = self._get_price(t)
+            except Exception as exc:
+                logger.warning(f"{self.name}: could not fetch price for {t} — {exc}")
+
+        # ── Step 4b: HRP weights ──────────────────────────────────────────────
+        # HRP uses historical return correlations to size positions by equal risk.
+        # Falls back to equal-weight when bars cache is missing.
         hrp_alloc = self._hrp.allocate_dollars(new_tickers, budget_left)
 
-        # ── Step 4b: Kelly fractions ──────────────────────────────────────────
-        # Kelly uses win-rate + payoff to scale within HRP budget
+        # ── Step 4c: Kelly fractions ──────────────────────────────────────────
         macro_mult = self._get_macro_mult()
-        prices     = {t: hrp_alloc[t]["price"] for t in new_tickers if hrp_alloc.get(t, {}).get("price", 0) > 0}
         kelly_sizes = self._kelly.size_all(
             picks         = new_picks,
             total_budget  = budget_left,
-            prices        = prices,
+            prices        = live_prices,
             stop_loss     = self.stop_loss,
             profit_target = self.profit_target,
             macro_mult    = macro_mult,
         )
 
         # ── Blend: average HRP and Kelly dollar allocations ───────────────────
-        new_tickers = [p["ticker"] for p in new_picks]  # may be shorter after risk filter
+        per_slot   = budget_left / len(new_tickers)   # equal-weight fallback
         blended: dict[str, dict] = {}
         for ticker in new_tickers:
-            hrp_d   = hrp_alloc.get(ticker, {}).get("dollars", budget_left / len(new_tickers))
+            hrp_d   = hrp_alloc.get(ticker, {}).get("dollars", per_slot)
             kelly_d = kelly_sizes.get(ticker, {}).get("dollars", hrp_d)
             dollars = (hrp_d + kelly_d) / 2
             # ── Concentration cap ─────────────────────────────────────────────
             dollars = self._risk.cap_position_dollars(dollars, equity)
-            price   = prices.get(ticker, 0)
+            price   = live_prices.get(ticker, 0)
             shares  = int(dollars / price) if price > 0 else 0
             blended[ticker] = {"dollars": round(dollars, 2), "shares": shares, "price": price}
 
         logger.info(
             f"{self.name}: HRP+Kelly sizing — "
-            + " | ".join(f"{t} ${v['dollars']:.0f} ({v['shares']}sh)" for t, v in blended.items())
+            + " | ".join(f"{t} ${v['dollars']:.0f} ({v['shares']}sh @ ${v['price']:.2f})"
+                         for t, v in blended.items())
         )
 
         entered = 0
@@ -414,13 +423,17 @@ class AISignalStrategy(BaseStrategy):
             sizing = blended.get(ticker, {})
 
             try:
-                price  = self._get_price(ticker)
-                shares = sizing.get("shares", 0)
+                price  = sizing.get("price", 0)    # already fetched live above
+                shares = sizing.get("shares", 0)   # computed from live price
+                if price <= 0:
+                    logger.warning(f"{self.name}: {ticker} — no live price, skipping")
+                    continue
                 if shares < 1:
-                    logger.info(f"{self.name}: {ticker} too expensive (${price:.2f}) — skipping")
+                    logger.info(f"{self.name}: {ticker} @ ${price:.2f} — insufficient budget for 1 share (${sizing.get('dollars',0):.0f} allocated), skipping")
                     continue
 
                 self._client.place_market_order(symbol=ticker, qty=shares, side="buy")
+                logger.info(f"{self.name}: ORDER SENT — BUY {shares}x {ticker} @ ${price:.2f}")
 
                 # Build thesis — prefer Claude's reasoning, fall back to LightGBM
                 features    = pick.get("top_features", [])
