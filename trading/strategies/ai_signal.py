@@ -294,17 +294,9 @@ class AISignalStrategy(BaseStrategy):
         pick_tickers = {p["ticker"] for p in current_picks}
         to_exit: list[tuple[str, int, str]] = []
 
-        # Fetch all exit prices in parallel — per-thread clients avoid Session deadlock
+        # Fetch all exit prices in parallel
         held_tickers = list(positions.keys())
-        exit_prices: dict[str, float] = {}
-        with ThreadPoolExecutor(max_workers=10) as pool:
-            fut_map = {pool.submit(_thread_get_price, t): t for t in held_tickers}
-            for fut in as_completed(fut_map, timeout=30):
-                t = fut_map[fut]
-                try:
-                    exit_prices[t] = fut.result()
-                except Exception as exc:
-                    logger.warning(f"{self.name}: price unavailable for {t} — {exc}")
+        exit_prices: dict[str, float] = self._fetch_prices_parallel(held_tickers)
 
         for ticker, pos in list(positions.items()):
             price = exit_prices.get(ticker)
@@ -397,18 +389,7 @@ class AISignalStrategy(BaseStrategy):
         new_tickers = [p["ticker"] for p in new_picks]
 
         # ── Step 4a: Fetch live prices for all new tickers (parallel) ───────
-        # Live prices are used for share calculation — avoids stale-bar-price
-        # issue where uncached tickers had price=0 and shares=0.
-        # Uses per-thread AlpacaClient to avoid requests.Session deadlock.
-        live_prices: dict[str, float] = {}
-        with ThreadPoolExecutor(max_workers=10) as pool:
-            fut_map = {pool.submit(_thread_get_price, t): t for t in new_tickers}
-            for fut in as_completed(fut_map, timeout=30):
-                t = fut_map[fut]
-                try:
-                    live_prices[t] = fut.result()
-                except Exception as exc:
-                    logger.warning(f"{self.name}: could not fetch price for {t} — {exc}")
+        live_prices: dict[str, float] = self._fetch_prices_parallel(new_tickers)
 
         # ── Step 4b: HRP weights ──────────────────────────────────────────────
         # HRP uses historical return correlations to size positions by equal risk.
@@ -590,6 +571,51 @@ class AISignalStrategy(BaseStrategy):
             logger.warning(f"{self.name}: cycle summary alert failed — {exc}")
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _fetch_prices_parallel(
+        self, tickers: list[str], timeout: float = 25.0
+    ) -> dict[str, float]:
+        """
+        Fetch latest prices for *tickers* in parallel using per-thread clients.
+
+        Key design decisions:
+        - Each thread creates its own AlpacaClient (thread-local) to avoid
+          sharing a requests.Session, which deadlocks urllib3's connection pool.
+        - We do NOT use `with ThreadPoolExecutor` because __exit__ calls
+          shutdown(wait=True), which blocks forever if threads are hung.
+        - Instead we call shutdown(wait=False, cancel_futures=True) ourselves
+          so stuck threads are abandoned immediately after the timeout.
+        """
+        if not tickers:
+            return {}
+
+        prices: dict[str, float] = {}
+        executor = ThreadPoolExecutor(max_workers=min(10, len(tickers)))
+        try:
+            fut_map = {executor.submit(_thread_get_price, t): t for t in tickers}
+            for fut in as_completed(fut_map, timeout=timeout):
+                t = fut_map[fut]
+                try:
+                    prices[t] = fut.result()
+                except Exception as exc:
+                    logger.warning(f"{self.name}: price unavailable for {t} — {exc}")
+        except TimeoutError:
+            completed = len(prices)
+            missing   = [t for t in tickers if t not in prices]
+            logger.warning(
+                f"{self.name}: price fetch timed out after {timeout:.0f}s "
+                f"({completed}/{len(tickers)} fetched) — skipping {missing}"
+            )
+        finally:
+            # cancel_futures=True drops queued-but-not-started work;
+            # wait=False means we don't block on threads that are mid-request.
+            executor.shutdown(wait=False, cancel_futures=True)
+
+        logger.info(
+            f"{self.name}: prices fetched — "
+            + ", ".join(f"{t}=${v:.2f}" for t, v in prices.items())
+        ) if prices else None
+        return prices
 
     def _get_price(self, ticker: str) -> float:
         return self._client.get_latest_price(ticker)
