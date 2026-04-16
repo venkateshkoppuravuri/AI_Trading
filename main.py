@@ -39,10 +39,18 @@ from trading.strategies.base import BaseStrategy
 
 # ── Week 1: Alerts & Signals (lazy-imported so missing keys don't crash) ──────
 def _get_telegram():
-    """Return TelegramBot instance (or None if import fails)."""
+    """Return TelegramBot instance for scheduler-level alerts (silent init)."""
     try:
+        import os
         from trading.alerts.telegram import TelegramBot
-        return TelegramBot()
+        # Suppress duplicate "initialised" log — strategy already logs its own
+        import logging
+        tg_logger = logging.getLogger("trading.alerts.telegram")
+        prev_level = tg_logger.level
+        tg_logger.setLevel(logging.WARNING)
+        bot = TelegramBot()
+        tg_logger.setLevel(prev_level)
+        return bot
     except Exception as exc:
         logger.warning(f"Telegram unavailable: {exc}")
         return None
@@ -280,8 +288,8 @@ def main() -> None:
         logger.error("No strategies selected — exiting.")
         return
 
-    # ── Week 1: initialise Telegram & Macro (non-blocking — failures are warnings)
-    telegram = _get_telegram()
+    # ── Macro check (non-blocking — failures are warnings) ────────────────────
+    telegram = _get_telegram()   # used for scheduler-level alerts only
     macro    = _get_macro()
 
     if macro:
@@ -307,6 +315,15 @@ def main() -> None:
 
     # ── One-shot mode (--once) ────────────────────────────────────────────────
     if args.once:
+        if not is_market_hours():
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            et = datetime.now(ZoneInfo("America/New_York"))
+            logger.warning(
+                f"Market is CLOSED right now ({et.strftime('%H:%M ET %a')}).\n"
+                f"  Orders placed now are queued as day orders and fill at next open (9:30 AM ET).\n"
+                f"  Run again during market hours (9:30 AM – 4:00 PM ET Mon–Fri) for live fills."
+            )
         logger.info("--once mode: running one cycle per strategy then exiting")
         for s in strats:
             try:
