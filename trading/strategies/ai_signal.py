@@ -368,6 +368,19 @@ class AISignalStrategy(BaseStrategy):
             logger.info(f"{self.name}: budget exhausted (${budget_left:.2f} left)")
             return
 
+        # Cap budget_left to actual available buying power so we never
+        # attempt orders we can't fill (other strategies occupy cash too).
+        try:
+            buying_power = float(self._client.get_buying_power())
+            if buying_power < budget_left:
+                logger.info(
+                    f"{self.name}: buying power ${buying_power:,.0f} < "
+                    f"strategy budget ${budget_left:,.0f} — capping to buying power"
+                )
+                budget_left = buying_power
+        except Exception as exc:
+            logger.warning(f"{self.name}: could not fetch buying power — {exc}")
+
         # Filter to only new tickers, then apply per-pick risk checks
         existing_tickers = list(positions.keys())
         new_picks = []
@@ -391,7 +404,6 @@ class AISignalStrategy(BaseStrategy):
         # ── Step 4a: Fetch live prices for all new tickers (parallel) ───────
         live_prices: dict[str, float] = self._fetch_prices_parallel(new_tickers)
 
-        # ── Step 4b: HRP weights ──────────────────────────────────────────────
         # ── Step 4b: HRP weights (with timeout guard) ────────────────────────
         # HRP reads 20 parquet files from state/bars/. On OneDrive or slow
         # drives this can hang indefinitely.  We run it on a daemon thread
@@ -508,6 +520,12 @@ class AISignalStrategy(BaseStrategy):
                 entered    += 1
 
             except Exception as exc:
+                err = str(exc)
+                if "insufficient buying power" in err.lower() or "40310000" in err:
+                    logger.warning(
+                        f"{self.name}: buying power exhausted after {entered} entries — stopping"
+                    )
+                    break
                 logger.error(f"{self.name}: buy failed for {ticker} — {exc}")
 
         if entered == 0:
